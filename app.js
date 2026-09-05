@@ -1,6 +1,6 @@
 const CLIENT_ID = "f9b69808a4f64f299c26b42bbe1c80ef";
 const REDIRECT_URI = window.location.origin + window.location.pathname;
-const SCOPES = "user-read-currently-playing user-read-playback-state";
+const SCOPES = "user-read-currently-playing user-read-playback-state user-modify-playback-state";
 const API_BASE = "https://api.spotify.com/v1";
 
 const $ = (selector) => document.querySelector(selector);
@@ -27,7 +27,7 @@ async function finishLogin() {
   const data = await response.json(); storeToken(data); window.history.replaceState({}, "", REDIRECT_URI); window.location.hash = "connected";
 }
 function storeToken(data) { state.token = data.access_token; state.expiresAt = Date.now() + (data.expires_in * 1000) - 60000; sessionStorage.setItem("airwave_token", state.token); sessionStorage.setItem("airwave_expires", state.expiresAt); }
-async function api(path) { if (!state.token || Date.now() > state.expiresAt) throw new Error("Your Spotify session expired. Reconnect to continue."); const response = await fetch(API_BASE + path, { headers: { Authorization: `Bearer ${state.token}` } }); if (response.status === 204) return null; if (response.status === 401) throw new Error("Your Spotify session expired. Reconnect to continue."); if (!response.ok) throw new Error("Spotify playback is unavailable right now."); return response.json(); }
+async function api(path, options = {}) { if (!state.token || Date.now() > state.expiresAt) throw new Error("Your Spotify session expired. Reconnect to continue."); const headers = { Authorization: `Bearer ${state.token}` }; if (options.body) headers["Content-Type"] = "application/json"; const response = await fetch(API_BASE + path, { ...options, headers }); if (response.status === 204) return null; if (response.status === 401) throw new Error("Your Spotify session expired. Reconnect to continue."); if (response.status === 403) throw new Error("Spotify playback control needs a Premium account and an active device."); if (!response.ok) throw new Error("Spotify playback is unavailable right now."); return response.json(); }
 
 async function refreshPlayback() {
   if (!state.token) return; setStatus("Scanning the airwaves...");
@@ -41,7 +41,8 @@ function updateProgress() { const percent = state.duration ? Math.min(100, (stat
 function formatTime(ms) { const seconds = Math.floor(ms / 1000); return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`; }
 function setStatus(message, type = "idle") { $("#status-message").textContent = message; $("#status-message").style.color = type === "error" ? "var(--rust-dark)" : type === "success" ? "var(--green)" : ""; }
 function tick() { if (state.isPlaying && state.progress < state.duration) { state.progress += 250; updateProgress(); } }
+async function controlPlayback(action) { if (!state.token) { setStatus("Connect Spotify before controlling playback.", "error"); return; } try { setStatus("Sending command..."); const endpoint = action === "play" ? "/me/player/play" : action === "pause" ? "/me/player/pause" : `/me/player/${action}`; await api(endpoint, { method: action === "play" || action === "pause" ? "PUT" : "POST" }); await refreshPlayback(); } catch (error) { setStatus(error.message, "error"); } }
 
-$("#connect-button").addEventListener("click", connect); $("#refresh-button").addEventListener("click", refreshPlayback); $("#pause-button").addEventListener("click", () => { document.body.classList.toggle("paused"); $("#pause-button").setAttribute("aria-label", document.body.classList.contains("paused") ? "Resume animation" : "Pause animation"); });
+$("#connect-button").addEventListener("click", connect); $("#refresh-button").addEventListener("click", refreshPlayback); $("#pause-button").addEventListener("click", () => controlPlayback(state.isPlaying ? "pause" : "play")); $("#play-button").addEventListener("click", () => controlPlayback(state.isPlaying ? "pause" : "play")); $("#previous-button").addEventListener("click", () => controlPlayback("previous")); $("#next-button").addEventListener("click", () => controlPlayback("next"));
 setInterval(tick, 250); setInterval(refreshPlayback, 5000);
 (async function init() { try { await finishLogin(); } catch (error) { setStatus(error.message, "error"); } if (state.token) { $("#connect-button").textContent = "Spotify connected"; $("#setup-note").textContent = "Your session is stored only in this browser tab."; refreshPlayback(); } })();
