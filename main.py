@@ -39,7 +39,9 @@ TOKEN_URL = "https://accounts.spotify.com/api/token"
 API_BASE = "https://api.spotify.com/v1"
 
 POLL_MS = 3000
-VINYL_FPS_MS = 45
+VINYL_FRAME_MS = 16
+VINYL_FPS = 60
+PROGRESS_TICK_MS = 250
 
 
 # ============================================================
@@ -278,6 +280,9 @@ class SpotifyClient:
     def currently_playing(self):
         return self.api_get("/me/player/currently-playing")
 
+    def queue(self):
+        return self.api_get("/me/player/queue")
+
 
 # ============================================================
 # VINYL GENERATOR
@@ -319,7 +324,8 @@ def make_vinyl_base(cover, size=430):
 
     # Grooves
     center = size // 2
-    for r in range(size // 2 - 8, size // 2 - 105, -7):
+    groove_stop = max(int(size * 0.30), 8)
+    for r in range(size // 2 - 8, groove_stop, -7):
         draw.ellipse(
             (center-r, center-r, center+r, center+r),
             outline=(40, 40, 43, 150),
@@ -590,7 +596,7 @@ class SpotifyVinylApp:
             pass
 
         self.root.minsize(260, 380)
-        place_bottom_right(self.root, 300, 420)
+        place_bottom_right(self.root, 340, 500)
 
         self._drag_x = 0
         self._drag_y = 0
@@ -601,6 +607,14 @@ class SpotifyVinylApp:
 
         self.frames = []
         self.frame_index = 0
+        self.animation_job = None
+        self.animation_started_at = None
+        self.progress_job = None
+        self.animation_running = True
+        self.track_progress_ms = 0
+        self.track_duration_ms = 0
+        self.track_started_at = None
+        self.track_is_playing = False
         self.cover_cache = {}
         self.photo = None
         self.last_track_id = None
@@ -612,10 +626,12 @@ class SpotifyVinylApp:
         self.status_var = tk.StringVar(value="Ready")
         self.progress_var = tk.StringVar(value="0:00 / 0:00")
         self.device_var = tk.StringVar(value="")
+        self.next_var = tk.StringVar(value="Next up: queue is empty")
 
         self._build_ui()
         self._show_placeholder()
         self.set_status("Ready", "idle")
+        self.progress_job = self.root.after(PROGRESS_TICK_MS, self.tick_progress)
 
     def _build_ui(self):
         f = self.font_family
@@ -623,9 +639,10 @@ class SpotifyVinylApp:
         # Compact header: small wordmark + a small round connect button
         header = tk.Frame(self.root, bg=BG)
         header.pack(fill="x", padx=14, pady=(12, 8))
+        header.grid_columnconfigure(0, weight=1)
 
         wordmark = tk.Frame(header, bg=BG)
-        wordmark.pack(side="left")
+        wordmark.grid(row=0, column=0, sticky="w")
 
         tk.Label(
             wordmark, text="SPOTIFY", font=(f, 9, "bold"),
@@ -640,7 +657,7 @@ class SpotifyVinylApp:
         self.close_button = tk.Label(
             header, text="✕", font=(f, 10), fg=TEXT_MUTED, bg=BG, cursor="hand2",
         )
-        self.close_button.pack(side="right")
+        self.close_button.grid(row=0, column=3, sticky="e")
         self.close_button.bind("<Button-1>", lambda e: self.root.destroy())
         self.close_button.bind(
             "<Enter>", lambda e: self.close_button.config(fg=TEXT_PRIMARY)
@@ -659,7 +676,19 @@ class SpotifyVinylApp:
             fg=ACCENT_TEXT, fg_disabled="#bfe8cf",
             font=(f, 9, "bold"),
         )
-        self.login_button.pack(side="right", padx=(0, 10))
+        self.login_button.grid(row=0, column=1, padx=(0, 8), sticky="e")
+
+        self.refresh_button = RoundedButton(
+            header,
+            text="Refresh",
+            command=self.refresh_now,
+            width=72, height=28, radius=14,
+            bg=BG, fill="#202024", fill_hover="#2b2b31",
+            fill_disabled="#17171a",
+            fg=TEXT_PRIMARY, fg_disabled=TEXT_MUTED,
+            font=(f, 8, "bold"), h_padding=16,
+        )
+        self.refresh_button.grid(row=0, column=2, padx=(0, 6), sticky="e")
 
         # Thin accent divider under the header
         divider = tk.Frame(self.root, bg=BORDER, height=1)
@@ -673,6 +702,21 @@ class SpotifyVinylApp:
             main, bg=BG, highlightthickness=0, width=220, height=220,
         )
         self.canvas.pack()
+
+        controls = tk.Frame(main, bg=BG)
+        controls.pack(pady=(2, 0))
+
+        self.animation_button = RoundedButton(
+            controls,
+            text="Pause vinyl",
+            command=self.toggle_animation,
+            width=94, height=24, radius=12,
+            bg=BG, fill="#18181c", fill_hover="#27272d",
+            fill_disabled="#151518",
+            fg=TEXT_SECONDARY, fg_disabled=TEXT_MUTED,
+            font=(f, 8), h_padding=14,
+        )
+        self.animation_button.pack()
 
         # No title bar means no OS drag handle — make the header and the
         # vinyl area draggable so the widget can still be repositioned.
@@ -694,6 +738,11 @@ class SpotifyVinylApp:
             main, textvariable=self.album_var, font=(f, 8),
             fg=TEXT_MUTED, bg=BG, wraplength=260, justify="center",
         ).pack(pady=(2, 10))
+
+        tk.Label(
+            main, textvariable=self.next_var, font=(f, 8),
+            fg="#85858d", bg=BG, wraplength=300, justify="center",
+        ).pack(pady=(0, 8))
 
         tk.Label(
             main, textvariable=self.progress_var, font=(f, 8),
@@ -801,28 +850,74 @@ class SpotifyVinylApp:
 
     def login_success(self):
         self.login_button.set_text("Connected")
+        self.login_button.set_enabled(False)
         self.set_status("Connected. Looking for your current track…", "info")
         self.poll()
+
+    def refresh_now(self):
+        if not self.spotify.access_token:
+            self.set_status("Connect Spotify before refreshing.", "info")
+            return
+
+        self.set_status("Refreshing playback…", "info")
+        self.poll(immediate=True)
 
     def login_failed(self, message):
         self.login_button.set_enabled(True)
         self.login_button.set_text("Connect")
         self.set_status("Login error: " + message, "error")
 
-    def poll(self):
+    def poll(self, immediate=False):
         if not self.spotify.access_token:
             return
 
         def worker():
             try:
                 data = self.spotify.currently_playing()
-                self.root.after(0, lambda: self.update_track(data))
+                queue_data = None
+                queue_error = None
+                try:
+                    queue_data = self.spotify.queue()
+                except Exception as exc:
+                    queue_error = str(exc)
+                self.root.after(
+                    0,
+                    lambda: self.update_playback(data, queue_data, queue_error),
+                )
             except Exception as exc:
                 self.root.after(0, lambda: self.set_status("API error: " + str(exc), "error"))
 
         threading.Thread(target=worker, daemon=True).start()
 
-        self.root.after(POLL_MS, self.poll)
+        if not immediate:
+            self.root.after(POLL_MS, self.poll)
+
+    def update_playback(self, data, queue_data, queue_error=None):
+        self.update_track(data)
+        self.update_queue(queue_data, queue_error)
+
+    def update_queue(self, data, error=None):
+        if error:
+            self.next_var.set("Next up: queue unavailable")
+            return
+
+        queued_items = (data or {}).get("queue", [])
+        if not queued_items:
+            self.next_var.set("Next up: queue is empty")
+            return
+
+        next_item = queued_items[0]
+        if next_item.get("type") == "track":
+            artists = ", ".join(
+                artist.get("name", "Unknown artist")
+                for artist in next_item.get("artists", [])
+            )
+            self.next_var.set(
+                f"Next up: {next_item.get('name', 'Unknown track')}"
+                f" • {artists or 'Unknown artist'}"
+            )
+        else:
+            self.next_var.set("Next up: non-music content")
 
     def update_track(self, data):
         if not data or not data.get("item"):
@@ -846,6 +941,10 @@ class SpotifyVinylApp:
 
         progress = data.get("progress_ms") or 0
         duration = item.get("duration_ms") or 1
+        self.track_progress_ms = progress
+        self.track_duration_ms = duration
+        self.track_is_playing = bool(data.get("is_playing"))
+        self.track_started_at = time.perf_counter()
 
         self.progress_var.set(
             f"{self.ms_to_time(progress)} / {self.ms_to_time(duration)}"
@@ -876,7 +975,7 @@ class SpotifyVinylApp:
             self.frames = self.cover_cache[image_url]
             self.frame_index = 0
             self.set_status("Now playing", "success")
-            self.animate_vinyl()
+            self.start_animation()
             return
 
         def worker():
@@ -887,7 +986,7 @@ class SpotifyVinylApp:
                 from io import BytesIO
                 image = Image.open(BytesIO(response.content)).convert("RGB")
 
-                frames = make_vinyl_frames(image, size=200)
+                frames = make_vinyl_frames(image, size=200, frames=120)
 
                 self.cover_cache[image_url] = frames
 
@@ -909,12 +1008,35 @@ class SpotifyVinylApp:
         self.frames = frames
         self.frame_index = 0
         self.set_status("Now playing", "success")
+        self.start_animation()
+
+    def start_animation(self):
+        if self.animation_job:
+            self.root.after_cancel(self.animation_job)
+        self.animation_started_at = time.perf_counter()
+        self.animation_job = None
         self.animate_vinyl()
 
+    def toggle_animation(self):
+        self.animation_running = not self.animation_running
+        if self.animation_running:
+            self.animation_button.set_text("Pause vinyl")
+            self.start_animation()
+        else:
+            self.animation_button.set_text("Play vinyl")
+            if self.animation_job:
+                self.root.after_cancel(self.animation_job)
+                self.animation_job = None
+
     def animate_vinyl(self):
-        if not self.frames:
+        if not self.frames or not self.animation_running:
             return
 
+        if self.animation_started_at is None:
+            self.animation_started_at = time.perf_counter()
+
+        elapsed = time.perf_counter() - self.animation_started_at
+        self.frame_index = int(elapsed * VINYL_FPS) % len(self.frames)
         image = self.frames[self.frame_index]
         self.photo = ImageTk.PhotoImage(image)
 
@@ -935,8 +1057,25 @@ class SpotifyVinylApp:
             tags="vinyl",
         )
 
-        self.frame_index = (self.frame_index + 1) % len(self.frames)
-        self.root.after(VINYL_FPS_MS, self.animate_vinyl)
+        self.animation_job = self.root.after(VINYL_FRAME_MS, self.animate_vinyl)
+
+    def tick_progress(self):
+        if self.track_duration_ms:
+            elapsed_ms = 0
+            if self.track_is_playing and self.track_started_at is not None:
+                elapsed_ms = (time.perf_counter() - self.track_started_at) * 1000
+
+            progress = min(
+                self.track_duration_ms,
+                self.track_progress_ms + elapsed_ms,
+            )
+            self.progress_var.set(
+                f"{self.ms_to_time(progress)} / "
+                f"{self.ms_to_time(self.track_duration_ms)}"
+            )
+            self.draw_progress(progress / self.track_duration_ms)
+
+        self.progress_job = self.root.after(PROGRESS_TICK_MS, self.tick_progress)
 
     def draw_progress(self, ratio):
         ratio = max(0, min(1, ratio))

@@ -78,7 +78,11 @@ After approval, return to the Tkinter app.
 - Downloads the album cover
 - Creates a circular vinyl record from the artwork
 - Adds vinyl grooves and a center hole
-- Smoothly rotates the record
+- Smoothly rotates the record at 60 FPS
+- Pauses and resumes vinyl animation
+- Manually refreshes playback without waiting for the next poll
+- Updates playback progress locally between Spotify polls
+- Reads and displays the next song in Spotify's queue
 - Automatically detects when the song changes
 - Refreshes the Spotify token when necessary
 
