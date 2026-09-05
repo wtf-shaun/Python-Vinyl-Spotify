@@ -1,6 +1,23 @@
-# Spotify Vinyl — Tkinter Desktop App
+# Spotify Vinyl — Tkinter Desktop App + Airwave FM Web App
 
 A Python/Tkinter desktop app that connects to Spotify using OAuth 2.0 Authorization Code with PKCE, displays the currently playing song, downloads its album artwork, turns it into a vinyl record and continuously rotates it.
+
+This folder also contains a static Vercel-ready web experience in `index.html`. It turns the same Spotify playback data into a warm retro radio interface.
+
+## Web app on Vercel
+
+1. Open `app.js` and replace `YOUR_SPOTIFY_CLIENT_ID` with the Client ID from your Spotify Developer Dashboard. A Client Secret is not needed.
+2. In the Spotify app settings, add both redirect URIs:
+
+       http://localhost:3000/
+       https://your-project.vercel.app/
+
+   Replace the second value with your real Vercel deployment URL. The URI must include the trailing slash if that is how the page is opened.
+3. Deploy this folder as a Vercel project. No build command or environment variables are required.
+
+For local browser testing, run `python -m http.server 3000` and open `http://localhost:3000/`. Do not open `index.html` directly from the filesystem because Spotify OAuth requires an HTTP origin.
+
+The web app uses Authorization Code with PKCE. Its access token is kept in `sessionStorage` for the current browser tab and no Spotify password or Client Secret is handled by the page.
 
 ## Requirements
 
