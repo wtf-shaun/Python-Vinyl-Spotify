@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import math
 import os
 import secrets
 import threading
@@ -304,6 +305,41 @@ def circle_mask(size):
     draw = ImageDraw.Draw(mask)
     draw.ellipse((0, 0, size - 1, size - 1), fill=255)
     return mask
+
+
+def extract_ambient_palette(image, count=3):
+    """Extract a few vivid colors from album artwork for the vinyl glow."""
+    sample = crop_square(image).resize((40, 40), Image.Resampling.BILINEAR)
+    colors = sample.getcolors(sample.width * sample.height)
+
+    ranked = sorted(
+        colors,
+        key=lambda entry: entry[0] * (max(entry[1]) - min(entry[1]) + 24),
+        reverse=True,
+    )
+
+    palette = []
+    for _, color in ranked:
+        if max(color) < 35:
+            continue
+        if all(sum(abs(color[index] - chosen[index]) for index in range(3)) > 55
+               for chosen in palette):
+            palette.append(color)
+        if len(palette) == count:
+            break
+
+    while len(palette) < count:
+        palette.append((30, 215, 96))
+
+    return palette
+
+
+def blend_color(first, second, amount):
+    amount = max(0.0, min(1.0, amount))
+    return "#%02x%02x%02x" % tuple(
+        int(first[index] + (second[index] - first[index]) * amount)
+        for index in range(3)
+    )
 
 
 def make_vinyl_base(cover, size=430):
@@ -611,11 +647,14 @@ class SpotifyVinylApp:
         self.animation_started_at = None
         self.progress_job = None
         self.animation_running = True
+        self.ambient_colors = [(30, 215, 96), (20, 120, 220), (160, 40, 180)]
+        self.ambient_ids = []
         self.track_progress_ms = 0
         self.track_duration_ms = 0
         self.track_started_at = None
         self.track_is_playing = False
         self.cover_cache = {}
+        self.palette_cache = {}
         self.photo = None
         self.last_track_id = None
         self.last_error = None
@@ -973,6 +1012,9 @@ class SpotifyVinylApp:
 
         if image_url in self.cover_cache:
             self.frames = self.cover_cache[image_url]
+            self.ambient_colors = self.palette_cache.get(
+                image_url, self.ambient_colors,
+            )
             self.frame_index = 0
             self.set_status("Now playing", "success")
             self.start_animation()
@@ -987,12 +1029,14 @@ class SpotifyVinylApp:
                 image = Image.open(BytesIO(response.content)).convert("RGB")
 
                 frames = make_vinyl_frames(image, size=200, frames=120)
+                palette = extract_ambient_palette(image)
 
                 self.cover_cache[image_url] = frames
+                self.palette_cache[image_url] = palette
 
                 self.root.after(
                     0,
-                    lambda: self.artwork_ready(frames)
+                    lambda: self.artwork_ready(frames, palette)
                 )
             except Exception as exc:
                 self.root.after(
@@ -1004,8 +1048,10 @@ class SpotifyVinylApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def artwork_ready(self, frames):
+    def artwork_ready(self, frames, palette=None):
         self.frames = frames
+        if palette:
+            self.ambient_colors = palette
         self.frame_index = 0
         self.set_status("Now playing", "success")
         self.start_animation()
@@ -1040,6 +1086,7 @@ class SpotifyVinylApp:
         image = self.frames[self.frame_index]
         self.photo = ImageTk.PhotoImage(image)
 
+        self.draw_ambient()
         self.canvas.delete("vinyl")
 
         w = self.canvas.winfo_width()
@@ -1058,6 +1105,49 @@ class SpotifyVinylApp:
         )
 
         self.animation_job = self.root.after(VINYL_FRAME_MS, self.animate_vinyl)
+
+    def draw_ambient(self):
+        width = max(self.canvas.winfo_width(), 220)
+        height = max(self.canvas.winfo_height(), 220)
+        center_x, center_y = width // 2, height // 2
+        pulse = (time.perf_counter() * 0.9) % (len(self.ambient_colors))
+        first_index = int(pulse) % len(self.ambient_colors)
+        next_index = (first_index + 1) % len(self.ambient_colors)
+        color_amount = pulse - int(pulse)
+        color = self.ambient_colors[first_index]
+        next_color = self.ambient_colors[next_index]
+        current = tuple(
+            int(color[index] + (next_color[index] - color[index]) * color_amount)
+            for index in range(3)
+        )
+        breathe = (time.perf_counter() * 1.8) % (2 * math.pi)
+        intensity = 0.78 + 0.12 * ((1 + math.sin(breathe)) / 2)
+
+        colors = [
+            blend_color(current, (11, 11, 13), 0.82),
+            blend_color(current, (11, 11, 13), 0.68),
+            blend_color(current, (11, 11, 13), 0.54),
+        ]
+        radii = [int(min(width, height) * factor * intensity)
+                 for factor in (0.54, 0.47, 0.40)]
+
+        if not self.ambient_ids:
+            for radius, fill in zip(radii, colors):
+                self.ambient_ids.append(
+                    self.canvas.create_oval(
+                        center_x - radius, center_y - radius,
+                        center_x + radius, center_y + radius,
+                        fill=fill, outline="", tags="ambient",
+                    )
+                )
+        else:
+            for item_id, radius, fill in zip(self.ambient_ids, radii, colors):
+                self.canvas.coords(
+                    item_id,
+                    center_x - radius, center_y - radius,
+                    center_x + radius, center_y + radius,
+                )
+                self.canvas.itemconfig(item_id, fill=fill)
 
     def tick_progress(self):
         if self.track_duration_ms:
