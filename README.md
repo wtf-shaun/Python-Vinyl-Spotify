@@ -79,6 +79,7 @@ After approval, return to the Tkinter app.
 - Creates a circular vinyl record from the artwork
 - Adds vinyl grooves and a center hole
 - Adds a pulsing ambient glow based on the album artwork colors
+- Displays the vinyl on a white turntable with a tonearm
 - Smoothly rotates the record at 60 FPS
 - Pauses and resumes vinyl animation
 - Manually refreshes playback without waiting for the next poll

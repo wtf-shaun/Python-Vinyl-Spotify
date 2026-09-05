@@ -649,6 +649,7 @@ class SpotifyVinylApp:
         self.animation_running = True
         self.ambient_colors = [(30, 215, 96), (20, 120, 220), (160, 40, 180)]
         self.ambient_ids = []
+        self.turntable_ids = []
         self.track_progress_ms = 0
         self.track_duration_ms = 0
         self.track_started_at = None
@@ -1087,6 +1088,7 @@ class SpotifyVinylApp:
         self.photo = ImageTk.PhotoImage(image)
 
         self.draw_ambient()
+        self.draw_turntable()
         self.canvas.delete("vinyl")
 
         w = self.canvas.winfo_width()
@@ -1105,6 +1107,61 @@ class SpotifyVinylApp:
         )
 
         self.animation_job = self.root.after(VINYL_FRAME_MS, self.animate_vinyl)
+
+    def draw_turntable(self):
+        """Draw the white platter and tonearm behind the rotating record."""
+        width = max(self.canvas.winfo_width(), 220)
+        height = max(self.canvas.winfo_height(), 220)
+        center_x, center_y = width // 2, height // 2
+        deck_left = center_x - 108
+        deck_top = center_y - 108
+        deck_right = center_x + 108
+        deck_bottom = center_y + 108
+
+        if not self.turntable_ids:
+            self.turntable_ids.append(
+                self.canvas.create_polygon(
+                    rounded_rect_points(
+                        deck_left, deck_top, deck_right, deck_bottom, 18,
+                    ),
+                    smooth=True, fill="#f4f4f1", outline="#ffffff",
+                    width=2, tags="turntable",
+                )
+            )
+            self.turntable_ids.append(
+                self.canvas.create_oval(
+                    center_x - 103, center_y - 103,
+                    center_x + 103, center_y + 103,
+                    outline="#d7d7d3", width=2, tags="turntable",
+                )
+            )
+            self.turntable_ids.append(
+                self.canvas.create_line(
+                    center_x + 88, center_y - 82,
+                    center_x + 88, center_y - 28,
+                    fill="#ffffff", width=5, capstyle="round",
+                    tags="turntable",
+                )
+            )
+            self.turntable_ids.append(
+                self.canvas.create_line(
+                    center_x + 88, center_y - 28,
+                    center_x + 58, center_y - 2,
+                    fill="#ffffff", width=4, capstyle="round",
+                    tags="turntable",
+                )
+            )
+            self.turntable_ids.append(
+                self.canvas.create_oval(
+                    center_x + 81, center_y - 89,
+                    center_x + 95, center_y - 75,
+                    fill="#ffffff", outline="#cfcfcb", width=1,
+                    tags="turntable",
+                )
+            )
+
+        self.canvas.tag_lower("turntable")
+        self.canvas.tag_raise("turntable", "ambient")
 
     def draw_ambient(self):
         width = max(self.canvas.winfo_width(), 220)
